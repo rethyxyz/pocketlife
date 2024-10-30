@@ -161,4 +161,3 @@ $conn->close();
 
 // Return the response as JSON
 echo json_encode($response);
-?>
