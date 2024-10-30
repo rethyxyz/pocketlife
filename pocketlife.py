@@ -9,6 +9,7 @@ import requests
 import sys
 from functools import wraps
 import sys
+import base64
 
 DEBUG = "ON"
 
@@ -173,6 +174,7 @@ class Application:
 
 class Global:
     '''Configurator and less specific functions lie here.'''
+
     def Post(category, data_list):
         '''
         Sorts data and uploads POST data to the destination telemetry server.
@@ -194,9 +196,21 @@ class Global:
             ram_usage_change = data_list[4]
             function_arguments = data_list[5]
 
+            # Handle serialization of the result
+            if isinstance(result, bytes):
+                # Convert bytes to base64 encoded string
+                result_serialized = base64.b64encode(result).decode('ascii')
+            else:
+                # Try to serialize result, or convert to string
+                try:
+                    json.dumps(result)  # Test if result is serializable
+                    result_serialized = result
+                except TypeError:
+                    result_serialized = str(result)
+
             # Assemble the data into a dictionary
             data = {
-                "result": result,
+                "result": result_serialized,
                 "function_name": function_name,
                 "execution_time": execution_time,
                 "cpu_usage_change": cpu_usage_change,
@@ -222,27 +236,36 @@ class Global:
         else:
             data = {}
 
-        json_data = json.dumps(data)
+        # Serialize the data, handling bytes objects
+        def custom_default(o):
+            if isinstance(o, bytes):
+                return base64.b64encode(o).decode('ascii')
+            else:
+                return str(o)
+
+        json_data = json.dumps(data, default=custom_default)
         Global.Debug(f"Prepared JSON data: {json_data}")
 
         # Send the POST request
         try:
+            # Construct the URL
+            url = f"{POCKETLIFE_HOSTNAME}/telemetry_api.php"  # Adjust the endpoint as needed
+
             # Set up the headers
             headers = {'Content-Type': 'application/json'}
 
-            # Construct the URL
-            url = POCKETLIFE_HOSTNAME
-            # Use Basic Authentication or API Key Authentication
-            # Example with Basic Authentication
+            # Use Basic Authentication
             auth = (POCKETLIFE_USERNAME, POCKETLIFE_PASSWORD)
 
             # Send the POST request with authentication
             response = requests.post(url, data=json_data, headers=headers, auth=auth, timeout=10)
+
             # Check for HTTP errors
             response.raise_for_status()
 
             # Log the response from the server
             Global.Debug(f"Data posted to {url}. Server response: {response.status_code} - {response.text}")
+
         except requests.exceptions.HTTPError as http_err:
             Global.Debug(f"HTTP error occurred: {http_err} - Response content: {response.text}")
         except requests.exceptions.ConnectionError as conn_err:
@@ -251,6 +274,7 @@ class Global:
             Global.Debug(f"Timeout error occurred: {timeout_err}")
         except Exception as e:
             Global.Debug(f"An error occurred: {e}")
+
 
     def Configure(username, password, hostname):
         '''Assigns username/password/hostname to global variables. Mandatory function.'''
