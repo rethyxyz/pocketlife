@@ -1,22 +1,19 @@
 <?php
 
 /*
- * TODO
- * Explanation as to how this works, and how you should create this for each
- * project to isloate telemetry.
- * 
- * Explain best username/password practices.
+ * https://rethy.xyz/Software/pocketlife
+ * Updated documentation can be found here.
  */
 
 // Database connection parameters
 $servername = "localhost";
-$username = "username";
-$password = "password";
-$dbname = "database";
+$username = "db_user";
+$password = "db_pass";
+$dbname = "pocketlife";
 
 // Valid API credentials
-define('API_USERNAME', 'username');
-define('API_PASSWORD', 'password');
+define('API_USERNAME', 'api_username');
+define('API_PASSWORD', 'api_password');
 
 // Create connection
 $conn = new mysqli($servername, $username, $password, $dbname);
@@ -28,10 +25,8 @@ if ($conn->connect_error)
     die("Connection failed: " . $conn->connect_error);
 }
 
-// Set the content type to JSON
 header('Content-Type: application/json');
 
-// Implement HTTP Basic Authentication
 if (!isset($_SERVER['PHP_AUTH_USER']))
 {
     header('WWW-Authenticate: Basic realm="Telemetry API"');
@@ -54,13 +49,12 @@ else
     }
 }
 
-// Get the raw POST data
+/* Get the raw data. */
 $json = file_get_contents('php://input');
 
-// Decode the JSON data
+/* Decode the data (assuming it's JSON). */
 $data = json_decode($json, true);
 
-// Check if JSON decoding was successful
 if ($data === null && json_last_error() !== JSON_ERROR_NONE)
 {
     http_response_code(400); // Bad Request
@@ -126,6 +120,7 @@ try
 
         $response['status'] = "success";
         $response['message'] = "Device information inserted successfully.";
+
     // Process 'function_trace' data
     }
     elseif (isset($data['function_name']))
@@ -144,6 +139,21 @@ try
 
         $response['status'] = "success";
         $response['message'] = "Function trace data inserted successfully.";
+
+    // Process 'program_usage' data
+    }
+    elseif (isset($data['CPUUsage']) || isset($data['RAMUsage']))
+    {
+        $cpu_usage = isset($data['CPUUsage']) ? floatval($data['CPUUsage']) : null;
+        $ram_usage = isset($data['RAMUsage']) ? floatval($data['RAMUsage']) : null;
+
+        $stmt = $conn->prepare("INSERT INTO program_usage (cpu_usage, ram_usage) VALUES (?, ?)");
+        $stmt->bind_param("dd", $cpu_usage, $ram_usage);
+        $stmt->execute();
+        $stmt->close();
+
+        $response['status'] = "success";
+        $response['message'] = "Program usage data inserted successfully.";
 
     }
     else
