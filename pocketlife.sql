@@ -31,3 +31,10 @@ CREATE TABLE IF NOT EXISTS function_trace (
     ram_usage_change DOUBLE,
     function_arguments TEXT
 );
+
+CREATE TABLE IF NOT EXISTS program_usage (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    cpu_usage FLOAT,
+    ram_usage FLOAT,
+    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
