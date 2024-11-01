@@ -5,20 +5,30 @@
  * Updated documentation can be found here.
  */
 
-// Database connection parameters
+/* API header name. */
+$api_name = "Telemetry API";
+
+/* Database connection variables. */
 $servername = "localhost";
 $username = "db_user";
 $password = "db_pass";
 $dbname = "pocketlife";
 
-// Valid API credentials
+/* API credentials. */
 define('API_USERNAME', 'api_username');
 define('API_PASSWORD', 'api_password');
 
-// Create connection
-$conn = new mysqli($servername, $username, $password, $dbname);
+/* Create connection */
+try {
+    $conn = new mysqli($servername, $username, $password, $dbname);
+}
+catch (Exception $e)
+{
+    die("Error connecting to \"$dbname\" database.");
+    //die("Error connecting to \"$dbname\" database: <br><br>$e.");
+}
 
-// Check connection
+/* Check connection. */
 if ($conn->connect_error)
 {
     http_response_code(500); // Internal Server Error
@@ -29,7 +39,7 @@ header('Content-Type: application/json');
 
 if (!isset($_SERVER['PHP_AUTH_USER']))
 {
-    header('WWW-Authenticate: Basic realm="Telemetry API"');
+    header('WWW-Authenticate: Basic realm="'.$api_name.'"');
     http_response_code(401); // Unauthorized
     echo json_encode(["error" => "Authentication required."]);
     exit();
@@ -42,7 +52,7 @@ else
     // Validate credentials
     if ($provided_username !== API_USERNAME || $provided_password !== API_PASSWORD)
     {
-        header('WWW-Authenticate: Basic realm="Telemetry API"');
+        header('WWW-Authenticate: Basic realm="'.$api_name.'"');
         http_response_code(401); // Unauthorized
         echo json_encode(["error" => "Invalid credentials."]);
         exit();
