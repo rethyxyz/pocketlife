@@ -8,13 +8,17 @@ import urllib.request
 import requests
 import sys
 from functools import wraps
-import sys
 import base64
+from pathlib import Path
 
-DEBUG = "ON"
+DEBUG = True
+_last_cpu_times = None
+_last_time = None
+
+POCKETLIFE_QUEUE = Path.home() / ".pocketlife-queue.json"
 
 class Fetch:
-    '''Pulls telemetry information from device, network, and resources.'''
+    '''Pulls telemetry information from the device, network, or resources.'''
 
     def Arguments():
         return str(sys.argv)
@@ -42,14 +46,33 @@ class Fetch:
             return ""
 
     def CPUUsage():
-        ''' Gets the current CPU usage of the Python program at the exact moment
-        this function is called.  '''
+        ''' Returns the current CPU % that the source program is using.  '''
+        global _last_cpu_times, _last_time
         try:
-            # Get the current process using its PID
             process = psutil.Process(os.getpid())
 
-            # Get the CPU usage percentage (instantaneous)
-            cpu_usage = process.cpu_percent(interval=0)
+            current_cpu_times = process.cpu_times()
+            current_time = time.time()
+
+            if _last_cpu_times is None or _last_time is None:
+                _last_cpu_times = current_cpu_times
+                _last_time = current_time
+                return 0.0
+
+            cpu_time_delta = (
+                (current_cpu_times.user - _last_cpu_times.user) +
+                (current_cpu_times.system - _last_cpu_times.system)
+            )
+
+            time_delta = current_time - _last_time
+
+            if time_delta == 0:
+                cpu_usage = 0.0
+            else:
+                cpu_usage = (cpu_time_delta / time_delta) * 100
+
+            _last_cpu_times = current_cpu_times
+            _last_time = current_time
 
             return cpu_usage
         except Exception as e:
@@ -59,12 +82,8 @@ class Fetch:
         ''' Gets the current RAM usage of the Python program at the exact moment
         this function is called.  Returns the usage in MB. '''
         try:
-            # Get the current process using its PID
             process = psutil.Process(os.getpid())
-            
-            # Get the memory usage in bytes and convert to MB
             ram_usage_mb = process.memory_info().rss / (1024 ** 2)
-            
             return ram_usage_mb
         except Exception as e:
             return {"error": str(e)}
@@ -77,14 +96,12 @@ class Fetch:
         try:
             net_io = psutil.net_io_counters()
 
-            # Capture the bytes sent and received
             sent_kb = net_io.bytes_sent / 1024
             recv_kb = net_io.bytes_recv / 1024
 
             return f"sent_kb: {sent_kb} received_kb: {recv_kb}"
         except Exception as e:
             return f"error: {str(e)}"
-
 
 class User:
     ''' User Telemetry '''
@@ -98,59 +115,76 @@ class User:
 
         Global.Post("device", [Language, OperatingSystem, PublicIPAddress])
 
-
 class Network:
-    '''Network Telemetry'''
+    '''
+    Network Telemetry
+
+    Wrapper functions specifically about the inbound and outbound traffic of the
+    source (calling) program or device.
+    '''
 
     def Bandwidth():
-        '''Overall bandwidth'''
+        '''
+        Bandwidth is derived from TODO.
+        '''
         bandwidth = Fetch.Bandwidth()
         Global.Post("bandwidth", [bandwidth])
 
-
 class Application:
-    '''Application Telemetry'''
+    '''
+    Application Telemetry
+
+    Wrapper functions that fetch and post data related to source (calling)
+    program runtime information.
+    '''
+
+    def ProgramUsage():
+        CPUUsage = str(Fetch.CPUUsage())
+        RAMUsage = str(Fetch.RAMUsage())+ " MB"
+        #Global.Debug(str(CPUUsage) + " " + str(RAMUsage))
+        Global.Post("program_usage", [CPUUsage, RAMUsage])
 
     def Arguments():
-        ''' POST list of intial arguments defined upon inital run, or at any
-        point. '''
+        '''
+        Pull the argument list defined at a point in runtime, and POST it to
+        the telemetry server.
+        '''
         arguments = Fetch.Arguments()
         Global.Post("arguments", [arguments])
 
     def FunctionTrace(func):
-        '''Decorator to trace RAM usage, CPU usage, execution time, and function arguments of a function.'''
+        '''
+        Decorator to trace RAM usage, CPU usage, execution time, and arguments
+        of a function.
+        '''
         @wraps(func)
         def wrapper(*args, **kwargs):
-            # Get the current process to monitor resource usage
             process = psutil.Process(os.getpid())
             
-            # Record the start time and initial CPU/RAM usage
             start_time = time.time()
+            # TODO: Inaccurate, doesn't provide much information.
             start_cpu = process.cpu_percent(interval=None)
+            # TODO: Inaccurate, doesn't provide much information.
             start_ram = process.memory_info().rss
 
-            # Capture function arguments
             try:
-                # Attempt to serialize the arguments to JSON
                 function_arguments = json.dumps({
                     'args': args,
                     'kwargs': kwargs
                 }, default=str)
             except Exception as e:
-                # Fallback to string representation if serialization fails
                 function_arguments = str({'args': args, 'kwargs': kwargs})
             
-            # Execute the function
             result = func(*args, **kwargs)
             
-            # Record the end time and final CPU/RAM usage
             end_time = time.time()
             end_cpu = process.cpu_percent(interval=None)
             end_ram = process.memory_info().rss
             
-            # Calculate the metrics
             elapsed_time = end_time - start_time
+            # TODO: Inaccurate, doesn't provide much information.
             cpu_usage = end_cpu - start_cpu
+            # TODO: Inaccurate, doesn't provide much information.
             ram_usage_mb = (end_ram - start_ram) / (1024 ** 2)
 
             function_name = func.__name__
@@ -158,7 +192,6 @@ class Application:
             cpu_usage_change = f"{cpu_usage:.2f}"
             ram_usage_change = f"{ram_usage_mb:.2f}"
 
-            # Include function_arguments in the data sent to Post
             Global.Post("function_trace", [
                 result,
                 function_name,
@@ -168,7 +201,7 @@ class Application:
                 function_arguments
             ])
 
-            return result  # Return the result of the function
+            return result
 
         return wrapper
 
@@ -177,17 +210,19 @@ class Global:
 
     def Post(category, data_list):
         '''
-        Sorts data and uploads POST data to the destination telemetry server.
+        1. Sorts string data into JSON.
+        2. POSTs data to a destination API.
 
-        Processes the following:
+        Processes the following categories:
             function_trace
             arguments
             bandwidth
             device
         '''
-        #check_configuration()  # Ensure that configure() has been called
 
-        # Assemble the data based on the category
+        #----------------#
+        # function_Trace #
+        #----------------#
         if category == "function_trace":
             result = data_list[0]
             function_name = data_list[1]
@@ -196,19 +231,15 @@ class Global:
             ram_usage_change = data_list[4]
             function_arguments = data_list[5]
 
-            # Handle serialization of the result
             if isinstance(result, bytes):
-                # Convert bytes to base64 encoded string
                 result_serialized = base64.b64encode(result).decode('ascii')
             else:
-                # Try to serialize result, or convert to string
                 try:
-                    json.dumps(result)  # Test if result is serializable
+                    json.dumps(result)
                     result_serialized = result
                 except TypeError:
                     result_serialized = str(result)
 
-            # Assemble the data into a dictionary
             data = {
                 "result": result_serialized,
                 "function_name": function_name,
@@ -217,12 +248,21 @@ class Global:
                 "ram_usage_change": ram_usage_change,
                 "function_arguments": function_arguments
             }
+        #-----------#
+        # arguments #
+        #-----------#
         elif category == "arguments":
             arguments = data_list[0]
             data = {"arguments": arguments}
+        #-----------#
+        # bandwidth #
+        #-----------#
         elif category == "bandwidth":
             bandwidth = data_list[0]
             data = {"bandwidth": bandwidth}
+        #--------#
+        # device #
+        #--------#
         elif category == "device":
             Language = data_list[0]
             OperatingSystem = data_list[1]
@@ -233,10 +273,21 @@ class Global:
                 "OperatingSystem": OperatingSystem,
                 "PublicIPAddress": PublicIPAddress
             }
+        #---------------#
+        # program_usage #
+        #---------------#
+        elif category == "program_usage":
+            CPUUsage = data_list[0]
+            RAMUsage = data_list[1]
+
+            data = {
+                "CPUUsage": CPUUsage,
+                "RAMUsage": RAMUsage
+            }
         else:
             data = {}
 
-        # Serialize the data, handling bytes objects
+        # TODO: Move this somewhere better than in the middle of a function.
         def custom_default(o):
             if isinstance(o, bytes):
                 return base64.b64encode(o).decode('ascii')
@@ -244,46 +295,100 @@ class Global:
                 return str(o)
 
         json_data = json.dumps(data, default=custom_default)
-        Global.Debug(f"Prepared JSON data: {json_data}")
+        Global.Debug(f"POST data: {json_data}")
 
-        # Send the POST request
+        # Check if the queue file exists and process queued entries
+        if POCKETLIFE_QUEUE.exists():
+            try:
+                with open(POCKETLIFE_QUEUE, 'r') as queue_file:
+                    queued_entries = queue_file.readlines()
+                # Attempt to post each queued JSON entry
+                remaining_entries = []
+                for entry in queued_entries:
+                    entry = entry.strip()
+                    if not entry:
+                        continue
+                    try:
+                        Global.Debug(f"POST data: {entry}")
+                        response = requests.post(
+                            POCKETLIFE_HOSTNAME,
+                            data=entry,
+                            headers={'Content-Type': 'application/json'},
+                            auth=(POCKETLIFE_USERNAME, POCKETLIFE_PASSWORD),
+                            timeout=10
+                        )
+                        response.raise_for_status()
+                        Global.Debug(f"{response.status_code}: {response.text}")
+                    except requests.exceptions.RequestException as e:
+                        Global.Debug(f"{response.status_code}: {response.text}")
+                        remaining_entries.append(entry)
+                # Overwrite the queue file with any remaining entries
+                with open(POCKETLIFE_QUEUE, 'w') as queue_file:
+                    for entry in remaining_entries:
+                        queue_file.write(entry + '\n')
+            except Exception as e:
+                Global.Debug(f"Error processing queue: {e}")
+
+        # Now attempt to post the current data
         try:
-            # Construct the URL
-            url = f"{POCKETLIFE_HOSTNAME}/telemetry_api.php"  # Adjust the endpoint as needed
-
-            # Set up the headers
             headers = {'Content-Type': 'application/json'}
-
-            # Use Basic Authentication
+            url = POCKETLIFE_HOSTNAME
             auth = (POCKETLIFE_USERNAME, POCKETLIFE_PASSWORD)
 
-            # Send the POST request with authentication
             response = requests.post(url, data=json_data, headers=headers, auth=auth, timeout=10)
-
-            # Check for HTTP errors
             response.raise_for_status()
-
-            # Log the response from the server
-            Global.Debug(f"Data posted to {url}. Server response: {response.status_code} - {response.text}")
-
+            Global.Debug(f"{response.status_code}: {response.text}")
+        # Exceptions that aren't important.
         except requests.exceptions.HTTPError as http_err:
             Global.Debug(f"HTTP error occurred: {http_err} - Response content: {response.text}")
+            # Append failed JSON entry to the queue
+            Global._append_to_queue(json_data)
         except requests.exceptions.ConnectionError as conn_err:
             Global.Debug(f"Connection error occurred: {conn_err}")
+            # Append failed JSON entry to the queue
+            Global._append_to_queue(json_data)
         except requests.exceptions.Timeout as timeout_err:
             Global.Debug(f"Timeout error occurred: {timeout_err}")
-        except Exception as e:
-            Global.Debug(f"An error occurred: {e}")
+            # Append failed JSON entry to the queue
+            Global._append_to_queue(json_data)
+        # Exceptions that are "show stoppers".
+        #
+        # Anything printed here should also contain the Global.Name() function
+        # call, as well as a quit statement.
+        except NameError:
+            Global.Name()
+            print(f"POCKETLIFE_USERNAME, POCKETLIFE_PASSWORD, and/or POCKETLIFE_HOSTNAME undefined.")
+            print(f"Quitting!")
+            sys.exit(1)
 
+    @staticmethod
+    def _append_to_queue(json_data):
+        '''Append failed JSON entry to the queue file.'''
+        try:
+            # Ensure the queue directory exists
+            POCKETLIFE_QUEUE.parent.mkdir(parents=True, exist_ok=True)
+            with open(POCKETLIFE_QUEUE, 'a') as queue_file:
+                queue_file.write(json_data + '\n')
+            Global.Debug("Data appended to queue file.")
+        except Exception as e:
+            Global.Debug(f"Error appending data to queue: {e}")
 
     def Configure(username, password, hostname):
-        '''Assigns username/password/hostname to global variables. Mandatory function.'''
+        '''
+        Assigns username/password/hostname to global variables. Mandatory function.
+        '''
         global POCKETLIFE_USERNAME, POCKETLIFE_PASSWORD, POCKETLIFE_HOSTNAME
         POCKETLIFE_USERNAME = username
         POCKETLIFE_PASSWORD = password
         POCKETLIFE_HOSTNAME = hostname
+
     def Debug(message):
-        '''Enables print statement'''
-        if DEBUG == "ON": print(str(message))
+        '''
+        Enables debug print statements. Toggled using the DEBUG global variable.
+        '''
+        if DEBUG:
+            print(str(message))
+
     def Name():
-        print("pocketlife: telemetry system")
+        '''Prints the name and description of the program.'''
+        print("pocketlife: A telemetry system for use in Python programs.")
