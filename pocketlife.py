@@ -218,6 +218,7 @@ class Global:
             arguments
             bandwidth
             device
+            program_usage
         '''
 
         #----------------#
